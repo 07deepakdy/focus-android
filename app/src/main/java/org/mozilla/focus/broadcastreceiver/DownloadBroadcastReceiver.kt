@@ -2,112 +2,97 @@
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+package org.mozilla.focus.broadcastreceiver
 
-package org.mozilla.focus.broadcastreceiver;
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.view.View
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import com.android.installreferrer.BuildConfig
 
-import android.app.DownloadManager;
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.database.Cursor;
-import android.net.Uri;
-import com.google.android.material.snackbar.Snackbar;
-import androidx.core.content.ContextCompat;
-import androidx.core.content.FileProvider;
-import android.view.View;
 
-import mozilla.components.support.utils.DownloadUtils;
+import com.google.android.material.snackbar.Snackbar
+import mozilla.components.support.utils.DownloadUtils.guessFileName
 
-import org.mozilla.focus.BuildConfig;
-import org.mozilla.focus.R;
-import org.mozilla.focus.utils.IntentUtils;
+import org.mozilla.focus.R
+import org.mozilla.focus.utils.IntentUtils
 
-import java.io.File;
-import java.util.HashSet;
+
+import java.io.File
+import java.util.HashSet
 
 /**
  * BroadcastReceiver for finished downloads
  */
-public class DownloadBroadcastReceiver extends BroadcastReceiver {
-    private static final String FILE_SCHEME = "file://";
-    private static final String FILE_PROVIDER_EXTENSION = ".fileprovider";
-
-    private final HashSet<Long> queuedDownloadReferences = new HashSet<>();
-    private final View browserContainer;
-    private final DownloadManager downloadManager;
-
-    public DownloadBroadcastReceiver(View view, DownloadManager downloadManager) {
-        this.browserContainer = view;
-        this.downloadManager = downloadManager;
+class DownloadBroadcastReceiver(private val browserContainer: View, private val downloadManager: DownloadManager) : BroadcastReceiver() {
+    private val queuedDownloadReferences = HashSet<Long>()
+    override fun onReceive(context: Context, intent: Intent) {
+        val downloadReference: Long = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+        displaySnackbar(context, downloadReference, downloadManager)
     }
 
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        final long downloadReference = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-        displaySnackbar(context, downloadReference, downloadManager);
-    }
-
-    private void displaySnackbar(final Context context, long completedDownloadReference, DownloadManager downloadManager) {
+    private fun displaySnackbar(context: Context, completedDownloadReference: Long, downloadManager: DownloadManager) {
         if (!isFocusDownload(completedDownloadReference)) {
-            return;
+            return
         }
-
-        final DownloadManager.Query query = new DownloadManager.Query();
-        query.setFilterById(completedDownloadReference);
-        try (Cursor cursor = downloadManager.query(query)) {
+        val query = DownloadManager.Query()
+        query.setFilterById(completedDownloadReference)
+        downloadManager.query(query).use { cursor ->
             if (cursor.moveToFirst()) {
-                int statusColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                val statusColumnIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
                 if (DownloadManager.STATUS_SUCCESSFUL == cursor.getInt(statusColumnIndex)) {
-                    String uriString = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI));
-
-                    final String localUri = uriString.startsWith(FILE_SCHEME) ? uriString.substring(FILE_SCHEME.length()) : uriString;
-                    final String decoded = Uri.decode(localUri);
-                    File file = new File(decoded);
-                    final String mimeType = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_MEDIA_TYPE));
-                    String fileName = DownloadUtils.guessFileName(null, null, decoded, null);
-                    final String fileName2 = DownloadUtils.guessFileName(null, null, decoded, mimeType);
+                    val uriString = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
+                    val localUri = if (uriString.startsWith(FILE_SCHEME)) uriString.substring(FILE_SCHEME.length) else uriString
+                    val decoded = Uri.decode(localUri)
+                    var file = File(decoded)
+                    val mimeType = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_MEDIA_TYPE))
+                    var fileName: String = guessFileName(null, null, decoded, null)
+                    val fileName2: String = guessFileName(null, null, decoded, mimeType)
                     // Rename the file extension if it lacks a known MIME type and the server provided a Content-Type header.
-                    if (!fileName.equals(fileName2)) {
-                        final File file2 = new File(file.getParent(), fileName2);
+                    if (fileName != fileName2) {
+                        val file2 = File(file.parent, fileName2)
                         if (file.renameTo(file2)) {
-                            file = file2;
-                            fileName = fileName2;
+                            file = file2
+                            fileName = fileName2
                         }
                     }
-
-                    final Uri uriForFile = FileProvider.getUriForFile(context, BuildConfig.APPLICATION_ID + FILE_PROVIDER_EXTENSION, file);
-                    final Intent openFileIntent = IntentUtils.INSTANCE.createOpenFileIntent(uriForFile, mimeType);
-                    showSnackbarForFilename(openFileIntent, context, fileName);
+                    val uriForFile = FileProvider.getUriForFile(context, BuildConfig.DEBUG.toString() + FILE_PROVIDER_EXTENSION, file)
+                    val openFileIntent: Intent? = IntentUtils.createOpenFileIntent(uriForFile, mimeType)
+                    showSnackbarForFilename(openFileIntent, context, fileName)
                 }
             }
         }
-        removeFromHashSet(completedDownloadReference);
+        removeFromHashSet(completedDownloadReference)
     }
 
-    private void showSnackbarForFilename(final Intent openFileIntent, final Context context, String fileName) {
-        final Snackbar snackbar = Snackbar
-                .make(browserContainer, String.format(context.getString(R.string.download_snackbar_finished), fileName), Snackbar.LENGTH_LONG);
-        if (IntentUtils.INSTANCE.activitiesFoundForIntent(context, openFileIntent)) {
-            snackbar.setAction(context.getString(R.string.download_snackbar_open), new View.OnClickListener() {
-                @Override
-                public void onClick(View view) {
-                    context.startActivity(openFileIntent);
-                }
-            });
-            snackbar.setActionTextColor(ContextCompat.getColor(context, R.color.snackbarActionText));
+    private fun showSnackbarForFilename(openFileIntent: Intent?, context: Context, fileName: String) {
+        val snackbar: Snackbar = Snackbar
+                .make(browserContainer, String.format(context.getString(R.string.download_snackbar_finished), fileName), Snackbar.LENGTH_LONG)
+        if (IntentUtils.activitiesFoundForIntent(context, openFileIntent)) {
+            snackbar.setAction(context.getString(R.string.download_snackbar_open), View.OnClickListener { context.startActivity(openFileIntent) })
+            snackbar.setActionTextColor(ContextCompat.getColor(context, R.color.snackbarActionText))
         }
-        snackbar.show();
+        snackbar.show()
     }
 
-    private boolean isFocusDownload(long completedDownloadReference) {
-        return (queuedDownloadReferences.contains(completedDownloadReference));
+    private fun isFocusDownload(completedDownloadReference: Long): Boolean {
+        return queuedDownloadReferences.contains(completedDownloadReference)
     }
 
-    private void removeFromHashSet(long completedDownloadReference) {
-        queuedDownloadReferences.remove(completedDownloadReference);
+    private fun removeFromHashSet(completedDownloadReference: Long) {
+        queuedDownloadReferences.remove(completedDownloadReference)
     }
 
-    public void addQueuedDownload(long referenceId) {
-        queuedDownloadReferences.add(referenceId);
+    fun addQueuedDownload(referenceId: Long) {
+        queuedDownloadReferences.add(referenceId)
+    }
+
+    companion object {
+        private const val FILE_SCHEME = "file://"
+        private const val FILE_PROVIDER_EXTENSION = ".fileprovider"
     }
 }
